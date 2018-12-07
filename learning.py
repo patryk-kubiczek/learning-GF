@@ -242,11 +242,13 @@ def predict(model, beta=1, n_tau=51, preprocessing='shift_and_rescale', samples=
 
 if __name__ == "__main__":
 
-    #perform_grid_search()
-    # model = perform_learning()
-    # model.save('model.h5')
-    # predict(model, samples=range(10, 50))
+    # perform_grid_search()
+    
+    model = perform_learning()
+    model.save('model.h5')
+    predict(model, samples=range(10, 50))
 
+    # Perform comparison against benchmark QMC data
     model = keras.models.load_model('model.h5', custom_objects={'max_error': max_error, 'boundary_cond': boundary_cond})
     predict(model, samples=range(50),
             gen_data_kwargs=dict(n_per_file=50, train_files=[0], val_files=[0], parent="data_cont_bath/"))
