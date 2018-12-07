@@ -1,0 +1,9 @@
+data*
+*.pyc
+*.png
+*.txt
+__pycache__
+DMFT_QMC.h5
+.*
+*~
+!/.gitignore
