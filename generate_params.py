@@ -1,5 +1,5 @@
 from math import sqrt, pi
-#from mpi_tools import *
+from mpi_tools import *
 import random
 import csv
 import numpy as np
@@ -55,15 +55,17 @@ def read_params_cont_bath(filename):
             params_list.append(params)
     return params_list
 
+samples_per_file = 1000
+files_per_core = 1 
+
 
 def name(prefix, beta, n, parent="data/"):
     return parent + prefix + "_beta_" + str(int(beta)) \
-            + "_" + str(0 * 10 + n) + ".csv"
+            + "_" + str(get_mpi_rank() * files_per_core + n) + ".csv"
 
-beta = 1.
+beta = 20.
 
-samples_per_file = 1000
-files_per_core = 10
+
 
 if __name__ == "__main__":
 

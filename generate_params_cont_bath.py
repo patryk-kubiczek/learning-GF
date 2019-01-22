@@ -1,6 +1,6 @@
 from generate_params import *
 
-n_params = 50
+n_params = 50 
 
 for _ in range(n_params):
     random_params_cont_bath(beta=beta,

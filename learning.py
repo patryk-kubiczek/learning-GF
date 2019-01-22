@@ -3,10 +3,16 @@ from keras.models import Sequential
 from keras.layers import Input, Dense, Conv1D, Dropout, Lambda, Flatten
 from keras.optimizers import SGD, RMSprop, Adagrad, Adadelta, Adam, Adamax, Nadam
 import keras.backend as K
+import tensorflow as tf
+import os
 from sklearn.model_selection import GridSearchCV
 from keras.wrappers.scikit_learn import KerasRegressor
 import numpy as np
+
+import matplotlib
+matplotlib.use("TKagg")
 from matplotlib import pyplot as plt
+
 
 def meta(beta):
     return "_beta_{}".format(beta)
@@ -179,13 +185,13 @@ def perform_grid_search(beta=1, n_tau=51, preprocessing='shift_and_rescale'):
             print("%f (%f) with: %r" % (mean, stdev, param))
 
 # Run and evaluate fit
-def perform_learning(beta=1, n_tau=51, preprocessing='shift_and_rescale', CNN=False):
+def perform_learning(beta=1, n_tau=51, preprocessing='shift_and_rescale', CNN=False, train_files=range(1,10), val_files=[0]):
 
     X_train, Y_train, X_test, Y_test, input_shape = generate_data(meta=meta(beta),
                                                                   n_tau=n_tau,
                                                                   preprocessing=preprocessing,
-                                                                  train_files=range(1, 10),
-                                                                  val_files=[0],
+                                                                  train_files=train_files,
+                                                                  val_files=val_files,
                                                                   CNN=CNN)
     model = create_model(preprocessing=preprocessing,
                          input_shape=input_shape,
@@ -194,7 +200,7 @@ def perform_learning(beta=1, n_tau=51, preprocessing='shift_and_rescale', CNN=Fa
                          optimizer=Nadam,
                          learn_rate=0.0002,
                          n_neurons=n_tau,
-                         n_hidden_layers=2,
+                         n_hidden_layers=3,
                          CNN=CNN)
     history = model.fit(X_train, Y_train,
                         batch_size = 8,
@@ -216,8 +222,11 @@ def perform_learning(beta=1, n_tau=51, preprocessing='shift_and_rescale', CNN=Fa
         plt.ylabel(metric)
         plt.xlabel('epoch')
         plt.legend(['train', 'test'], loc='best')
-        plt.show()
-        return model
+        plt.savefig(str(metric) + ".png")
+        if False:
+            plt.show()
+        plt.close()
+    return model
 
 # Prediction
 def predict(model, beta=1, n_tau=51, preprocessing='shift_and_rescale', samples=range(10),
@@ -235,20 +244,39 @@ def predict(model, beta=1, n_tau=51, preprocessing='shift_and_rescale', samples=
         plt.ylim([-1,0])
         plt.legend(["ED", "NN", "weak", "strong"], loc='best')
         plt.title("Sample {}".format(i))
-        mng = plt.get_current_fig_manager()
-        mng.resize(*mng.window.maxsize())
+        #mng = plt.get_current_fig_manager()
+        #mng.resize(*mng.window.maxsize())
         plt.show()
 
 
 if __name__ == "__main__":
 
+    #from generate_params import beta
+    beta = 20
+
+    # Multithreading - optimizations	
+    n_thread = int(os.environ["OMP_NUM_THREADS"])
+    config = tf.ConfigProto(intra_op_parallelism_threads=n_thread, 
+		            inter_op_parallelism_threads=2, 
+			    allow_soft_placement=True, 
+			    device_count = {'CPU': n_thread})
+    session = tf.Session(config=config)
+    K.set_session(session)
+
+    os.environ["KMP_BLOCKTIME"] = "30"
+    os.environ["KMP_SETTINGS"] = "1"
+    os.environ["KMP_AFFINITY"]= "granularity=fine,verbose,compact,1,0"
+
     # perform_grid_search()
     
-    model = perform_learning()
-    model.save('model.h5')
-    predict(model, samples=range(10, 50))
+    #model = perform_learning(beta, n_tau=101, train_files=range(0, 32), val_files=range(32, 40))
+    #model.save('model.h5')
+    
+    # Show how the test GF are predicted
+    model = keras.models.load_model('model.h5', custom_objects={'max_error': max_error, 'boundary_cond': boundary_cond})
+    #predict(model, beta=beta, n_tau=101, samples=range(10, 50),
+#	    gen_data_kwargs=dict(n_tau=101, meta=meta(beta), train_files=[0], val_files=[0]))
 
     # Perform comparison against benchmark QMC data
-    model = keras.models.load_model('model.h5', custom_objects={'max_error': max_error, 'boundary_cond': boundary_cond})
-    predict(model, samples=range(50),
-            gen_data_kwargs=dict(n_per_file=50, train_files=[0], val_files=[0], parent="data_cont_bath/"))
+    predict(model, beta=beta, n_tau = 101, samples=range(50),
+            gen_data_kwargs=dict(n_per_file=50, n_tau=101, meta=meta(beta), train_files=[0], val_files=[0], parent="data_cont_bath/"))

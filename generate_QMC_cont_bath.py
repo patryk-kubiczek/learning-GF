@@ -2,9 +2,15 @@ from time import time
 from qmc import qmc_gf
 from generate_params import read_params_cont_bath, name, beta
 from params import Gamma_func, integrated_Gamma, E_max
+from mpi_tools import mpi_broadcast
 
 G_filename_QMC = name("G_QMC", beta, 0, parent="data_cont_bath/")
-params = read_params_cont_bath(name("params_cont_bath", beta, 0, parent="data_cont_bath/"))
+G_filename_QMC = mpi_broadcast(G_filename_QMC)
+
+params_filename = name("params_cont_bath", beta, 0, parent="data_cont_bath/")
+params_filename = mpi_broadcast(params_filename)
+
+params = read_params_cont_bath(params_filename)
 
 T_start = time()
 

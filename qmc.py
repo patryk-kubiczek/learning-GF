@@ -3,7 +3,8 @@ import numpy as np
 from pytriqs.gf.local import *
 from pytriqs.gf.local.tools import *
 from pytriqs.dos import *
-from pytriqs.applications.impurity_solvers.cthyb import Solver
+#from pytriqs.applications.impurity_solvers.cthyb import Solver
+from cthyb import Solver
 from pytriqs.operators import n
 from pytriqs.utility import mpi
 from math import sqrt, pi
@@ -58,7 +59,7 @@ def generate_G_0(eps, Delta_iw):
 
 # QMC solution for G
 def get_G_tau(eps, U, Delta_iw, measure_gl=False, rebinning_factor=1):
-    n_cycles, cycle_length = 5000000, 25
+    n_cycles, cycle_length = 500000, 25
 
     beta = Delta_iw.beta
 

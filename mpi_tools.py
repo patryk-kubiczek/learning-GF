@@ -14,6 +14,10 @@ def mpi_barrier():
     comm = MPI.COMM_WORLD
     return comm.Barrier()
 
+def mpi_broadcast(data):
+    comm = MPI.COMM_WORLD
+    return comm.bcast(data, root=0)	
+
 def sublist_for_a_process(full_list):
     rank = get_mpi_rank()
     size = get_mpi_size()
