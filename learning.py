@@ -8,16 +8,42 @@ import os
 from sklearn.model_selection import GridSearchCV
 from keras.wrappers.scikit_learn import KerasRegressor
 import numpy as np
+from math import tanh, atanh
+from scipy import interpolate
 
 import matplotlib
-matplotlib.use("TKagg")
+#matplotlib.use("agg")
 from matplotlib import pyplot as plt
+
+from generate_params import read_params, read_params_cont_bath, name
 
 
 def meta(beta):
     return "_beta_{}".format(beta)
 
+def rescale(data, alpha=4):
+    def f(x):
+        rho = 0.5 * (1 - tanh(alpha))
+        return (-rho + 0.5 * (tanh(alpha * (2 * x - 1)) + 1)) / (1 - 2 * rho)
+    args = np.linspace(0, 1, num=len(data), endpoint=True)
+    tck = interpolate.splrep(args, data, s=0.000001)
+    rescaled_args = np.array([f(x) for x in args])
+    new_data = interpolate.splev(rescaled_args, tck, der=0)
+    return np.array(new_data)
+
+def back_rescale(data, alpha=5):
+    def inv_f(x):
+        rho = 0.5 * (1 - tanh(alpha))
+        return atanh(2 * (1 - 2 * rho) * x + 2 * rho - 1) / (2 * alpha) + 0.5
+    args = np.linspace(0, 1, num=len(data), endpoint=True)
+    tck = interpolate.splrep(args, data, s=0.000001)
+    rescaled_args = np.array([inv_f(x) for x in args])
+    new_data = interpolate.splev(rescaled_args, tck, der=0)
+    return np.array(new_data)
+
 def transform(data, how="shift_and_rescale"):
+    for i in range(len(data)):
+        data[i, :] = rescale(data[i, :])
     if how == "minus":
         return -data
     if how == "shift":
@@ -33,17 +59,24 @@ def transform(data, how="shift_and_rescale"):
 
 def back_transform(data, how="shift_and_rescale"):
     if how == "minus":
-        return -data
+        data = -data
     if how == "shift":
-        return data - 0.5
+        data = data - 0.5
     if how == "shift_and_rescale":
-        return 0.5 * data - 0.5
+        data = 0.5 * data - 0.5
     if how == "shift_and minus":
-        return -data - 0.5
+        data = data - 0.5
     if how == "shift_and_rescale_and_minus":
-        return -0.5 * data - 0.5
+        data = -0.5 * data - 0.5
     else:
-        return data
+        data = data
+    if hasattr(data, '__len__'):
+        if len(data.shape) == 1:
+            data[:] = back_rescale(data)
+        else:
+            for i in range(len(data)):
+                data[i, :] = back_rescale(data[i, :])
+    return data
 
 def generate_data(meta=meta(1),
                   n_tau=51,
@@ -198,13 +231,13 @@ def perform_learning(beta=1, n_tau=51, preprocessing='shift_and_rescale', CNN=Fa
                          n_output=n_tau,
                          activation='elu',
                          optimizer=Nadam,
-                         learn_rate=0.0002,
+                         learn_rate=2 * 0.0002,
                          n_neurons=n_tau,
-                         n_hidden_layers=3,
+                         n_hidden_layers=8,
                          CNN=CNN)
     history = model.fit(X_train, Y_train,
                         batch_size = 8,
-                        epochs = 100,
+                        epochs = 80,
                         validation_data=(X_test, Y_test),
                         verbose=True)
     score = model.evaluate(X_test, Y_test, verbose=1)
@@ -230,23 +263,91 @@ def perform_learning(beta=1, n_tau=51, preprocessing='shift_and_rescale', CNN=Fa
 
 # Prediction
 def predict(model, beta=1, n_tau=51, preprocessing='shift_and_rescale', samples=range(10),
-            gen_data_kwargs={}):
+            gen_data_kwargs={}, cont_bath=False):
     X_train, Y_train, X_test, Y_test, input_shape  = generate_data(**gen_data_kwargs)
-    Y = back_transform(model.predict(X_test[list(samples)]), how=preprocessing)
+    Y = model.predict(X_test[list(samples)])
     tau = np.linspace(0, beta, n_tau, endpoint=True)
-    for i, y in zip(samples, Y):
-        plt.plot(tau, back_transform(Y_test[i], how=preprocessing), '-')
-        plt.plot(tau, y, '--')
-        plt.plot(tau, back_transform(X_test[i, :n_tau], how=preprocessing), '-.')
-        plt.plot(tau, back_transform(X_test[i, n_tau:], how=preprocessing), '-.')
+    # We assume we draw samples from file 39 
+    if not cont_bath:
+        params = read_params(name("params", beta, 39))
+    else:
+        params = read_params_cont_bath(name("params", beta, 0, parent="data_cont_bath/"))
+    params = [params[i] for i in samples]
+
+    for i, y, p in zip(samples, Y, params):
+        error = max(np.abs(Y_test[i] - y))
+        bc = back_transform(y, how=preprocessing)
+        bc = bc[0] + bc[-1]
+        plt.axhline(0, color='k', ls=':', lw=1)
+        plt.plot(tau, back_transform(Y_test[i], how=preprocessing), '-', label="ED" if not cont_bath else "QMC")
+        plt.plot(tau, back_transform(y, how=preprocessing), '--', label="NN")
+        plt.plot(tau, back_transform(X_test[i, :n_tau], how=preprocessing), '-.', label="weak")
+        plt.plot(tau, back_transform(X_test[i, n_tau:], how=preprocessing), '-.', label="strong")
         plt.xlabel(r"$\tau$")
         plt.ylabel(r"$G(\tau)$")
-        plt.ylim([-1,0])
-        plt.legend(["ED", "NN", "weak", "strong"], loc='best')
-        plt.title("Sample {}".format(i))
+        plt.ylim([-0.7,0.05])
+        plt.legend(loc='best')
+        #plt.title("Sample {}".format(i))
+        title_str = r"$U={:.2f},\varepsilon={:.2f}".format(p["U"], p["eps"])
+        if not cont_bath:
+            title_str += r"$" + "\n"
+            title_str += r"$(\epsilon_i, V_i)\in \{"
+            for e, V in zip(p["e_list"], p["V_list"]):
+                title_str += r"({:.2f}, {:.2f}),".format(e, V)
+            title_str = title_str[:-1]
+            title_str += r"\}$"
+        else:
+            title_str += r", D={:.2f}$".format(p["D"])
+        title_str += "\n max error = {:.5f} \n".format(error / 2)
+        title_str += r"$G(0) + G(\beta) = {:.5f}$".format(bc)
+        plt.title(title_str, fontsize="medium")
+        plt.tight_layout()
+        if not cont_bath:
+            plt.savefig("plots/sample{}.png".format(i), dpi=300)
+        else:
+            plt.savefig("plots_cont_bath/sample{}.png".format(i), dpi=300)
         #mng = plt.get_current_fig_manager()
         #mng.resize(*mng.window.maxsize())
-        plt.show()
+        #plt.show()
+        plt.close()
+
+def evaluate(model, beta=1, gen_data_kwargs={}):
+    X_train, Y_train, X_test, Y_test, input_shape  = generate_data(**gen_data_kwargs)
+    score = model.evaluate(X_train, Y_train, batch_size=80000)
+    return score
+
+def plot_input(beta=1, n_tau=51, preprocessing='shift_and_rescale', samples=range(10),
+               gen_data_kwargs={}):
+    X_train, Y_train, X_test, Y_test, input_shape  = generate_data(**gen_data_kwargs)
+    tau = np.linspace(0, beta, n_tau, endpoint=True)
+    # We assume we draw samples from file 0
+    params = read_params(name("params", beta, 0))
+    params = [params[i] for i in samples]
+
+    for i, p in zip(samples, params):
+        plt.plot(tau, Y_test[i], 'o')
+        plt.plot(tau, X_test[i, :n_tau], 'o', c='C2')
+        plt.plot(tau, X_test[i, n_tau:], 'o', c='C3')
+        plt.xlabel(r"$\tau$")
+        plt.ylabel(r"$F(\tau) = \left[ G(\tau) + 0.5 \right] \cdot 2$")
+        plt.ylim([-0.4,0.8])
+        plt.legend(["ED", "weak", "strong"], loc='best')
+        #plt.title("Sample {}".format(i))
+        title_str = r"$U={:.2f},\varepsilon={:.2f}".format(p["U"], p["eps"])
+        title_str += r"$" + "\n"
+        title_str += r"$(\epsilon_i, V_i)\in \{"
+        for e, V in zip(p["e_list"], p["V_list"]):
+            title_str += r"({:.2f}, {:.2f}),".format(e, V)
+        title_str = title_str[:-1]
+        title_str += r"\}$"
+        plt.title(title_str, fontsize="medium")
+        plt.tight_layout()
+        plt.savefig("plots/data{}.png".format(i), dpi=300)
+        #mng = plt.get_current_fig_manager()
+        #mng.resize(*mng.window.maxsize())
+        #plt.show()
+        plt.close()
+
 
 
 if __name__ == "__main__":
@@ -254,12 +355,12 @@ if __name__ == "__main__":
     #from generate_params import beta
     beta = 20
 
-    # Multithreading - optimizations	
+    # Multithreading - optimizations
     n_thread = int(os.environ["OMP_NUM_THREADS"])
-    config = tf.ConfigProto(intra_op_parallelism_threads=n_thread, 
-		            inter_op_parallelism_threads=2, 
-			    allow_soft_placement=True, 
-			    device_count = {'CPU': n_thread})
+    config = tf.ConfigProto(intra_op_parallelism_threads=n_thread,
+                            inter_op_parallelism_threads=2,
+                            allow_soft_placement=True,
+                            device_count = {'CPU': n_thread})
     session = tf.Session(config=config)
     K.set_session(session)
 
@@ -268,15 +369,29 @@ if __name__ == "__main__":
     os.environ["KMP_AFFINITY"]= "granularity=fine,verbose,compact,1,0"
 
     # perform_grid_search()
-    
-    #model = perform_learning(beta, n_tau=101, train_files=range(0, 32), val_files=range(32, 40))
-    #model.save('model.h5')
-    
+
+    # model = perform_learning(beta, n_tau=101, train_files=range(0, 32), val_files=range(32, 40))
+    # model.save('model.h5')
+
     # Show how the test GF are predicted
     model = keras.models.load_model('model.h5', custom_objects={'max_error': max_error, 'boundary_cond': boundary_cond})
-    #predict(model, beta=beta, n_tau=101, samples=range(10, 50),
-#	    gen_data_kwargs=dict(n_tau=101, meta=meta(beta), train_files=[0], val_files=[0]))
+    predict(model, beta=beta, n_tau=101, samples=range(0, 50),
+        gen_data_kwargs=dict(n_tau=101, meta=meta(beta), train_files=[39], val_files=[39]))
 
     # Perform comparison against benchmark QMC data
-    predict(model, beta=beta, n_tau = 101, samples=range(50),
+    predict(model, beta=beta, n_tau = 101, samples=range(0, 50), cont_bath=True,
             gen_data_kwargs=dict(n_per_file=50, n_tau=101, meta=meta(beta), train_files=[0], val_files=[0], parent="data_cont_bath/"))
+
+    score_train = evaluate(model, gen_data_kwargs=dict(n_tau=101, meta=meta(beta), train_files=range(0,32), val_files=[0]))
+    score_test = evaluate(model, gen_data_kwargs=dict(n_tau=101, meta=meta(beta), train_files=range(32,40), val_files=[0]))
+    score_new = evaluate(model, gen_data_kwargs=dict(n_tau=101, meta=meta(beta), n_per_file=50, train_files=[0], val_files=[0], parent="data_cont_bath/"))
+
+    with open("scores.txt", "w") as f:
+        for score, m_name in zip([score_train, score_test, score_new], ["train", "test", "continuous bath"]):
+            f.write(m_name + "\n")
+            for s, metric in zip(score, ['MSE', 'MAE', 'max error', 'boundary cond']):
+                if metric in ['MAE', 'max error']:
+                    s = s / 2
+                f.write(metric + ": " + str(s) + " ")
+            f.write("\n")
+
