@@ -7,6 +7,7 @@ from sklearn.model_selection import GridSearchCV
 from keras.wrappers.scikit_learn import KerasRegressor
 import numpy as np
 from matplotlib import pyplot as plt
+from generate_params import read_params, read_params_cont_bath, name
 
 def meta(beta):
     return "_beta_{}".format(beta)
@@ -154,11 +155,11 @@ def create_model(preprocessing='shift_and_rescale',
     return model
 
 # Optimize hyperparameters of the model
-def perform_grid_search(beta=1, n_tau=51, preprocessing='shift_and_rescale'):
+def perform_grid_search(beta=1, n_tau=51, preprocessing='shift_and_rescale', train_files=range(10)):
     X_train, Y_train, X_test, Y_test, input_shape = generate_data(meta=meta(beta),
                                                                   n_tau=n_tau,
                                                                   preprocessing=preprocessing,
-                                                                  train_files=range(10),
+                                                                  train_files=train_files,
                                                                   val_files=[])
 
     model = KerasRegressor(build_fn=create_model, epochs=100, verbose=False)
@@ -169,14 +170,15 @@ def perform_grid_search(beta=1, n_tau=51, preprocessing='shift_and_rescale'):
     param_grid = dict(optimizer=optimizers, activation=activations,
                       batch_size=batch_sizes, learn_rate=learn_rates)
 
-    grid = GridSearchCV(estimator=model, param_grid=param_grid, n_jobs=-1)
+    grid = GridSearchCV(estimator=model, scoring='neg_mean_squared_error', param_grid=param_grid, n_jobs=-1)
     grid_result = grid.fit(X_train, Y_train)
 
     means = grid_result.cv_results_['mean_test_score']
     stds = grid_result.cv_results_['std_test_score']
     params = grid_result.cv_results_['params']
-    for mean, stdev, param in zip(means, stds, params):
-            print("%f (%f) with: %r" % (mean, stdev, param))
+    with open("grid_search.txt", "w") as f:
+        for mean, stdev, param in zip(means, stds, params):
+            f.write("%f +- %f with: %r \n" % (mean, stdev, param))
 
 # Run and evaluate fit
 def perform_learning(beta=1, n_tau=51, preprocessing='shift_and_rescale', CNN=False):
@@ -184,8 +186,8 @@ def perform_learning(beta=1, n_tau=51, preprocessing='shift_and_rescale', CNN=Fa
     X_train, Y_train, X_test, Y_test, input_shape = generate_data(meta=meta(beta),
                                                                   n_tau=n_tau,
                                                                   preprocessing=preprocessing,
-                                                                  train_files=range(1, 10),
-                                                                  val_files=[0],
+                                                                  train_files=range(3, 10),
+                                                                  val_files=[0,1,2],
                                                                   CNN=CNN)
     model = create_model(preprocessing=preprocessing,
                          input_shape=input_shape,
@@ -209,44 +211,133 @@ def perform_learning(beta=1, n_tau=51, preprocessing='shift_and_rescale', CNN=Fa
     print('Test max error:', score[2])
     print('Test boundary condition', score[3])
 
-    # summarize history for max error
-    for metric in ['mean_absolute_error', 'max_error', 'boundary_cond']:
-        plt.plot(history.history[metric])
-        plt.plot(history.history['val_' + metric])
+    # summarize history for metrics
+    for metric in ['loss', 'mean_absolute_error', 'max_error', 'boundary_cond']:
+        train_metric = history.history[metric]
+        test_metric = history.history['val_' + metric]
+        np.savetxt("train_" + metric + ".txt", train_metric)
+        np.savetxt("test_" + metric + ".txt", test_metric)
+        plt.plot(train_metric)
+        plt.plot(test_metric)
         plt.ylabel(metric)
         plt.xlabel('epoch')
         plt.legend(['train', 'test'], loc='best')
-        plt.show()
-        return model
+        plt.savefig(metric + ".png")
+        #plt.show()
+        plt.close()
+    return model
 
 # Prediction
 def predict(model, beta=1, n_tau=51, preprocessing='shift_and_rescale', samples=range(10),
-            gen_data_kwargs={}):
+            gen_data_kwargs={}, cont_bath=False):
     X_train, Y_train, X_test, Y_test, input_shape  = generate_data(**gen_data_kwargs)
-    Y = back_transform(model.predict(X_test[list(samples)]), how=preprocessing)
+    Y = model.predict(X_test[list(samples)])
     tau = np.linspace(0, beta, n_tau, endpoint=True)
-    for i, y in zip(samples, Y):
+    # We assume we draw samples from file 0
+    if not cont_bath:
+        params = read_params(name("params", beta, 0))
+    else:
+        params = read_params_cont_bath(name("params", beta, 0, parent="data_cont_bath/"))
+    params = [params[i] for i in samples]
+
+    for i, y, p in zip(samples, Y, params):
+        error = max(np.abs(Y_test[i] - y))
+        bc = back_transform(y, how=preprocessing)
+        bc = bc[0] + bc[-1]
         plt.plot(tau, back_transform(Y_test[i], how=preprocessing), '-')
-        plt.plot(tau, y, '--')
+        plt.plot(tau, back_transform(y, how=preprocessing), '--')
         plt.plot(tau, back_transform(X_test[i, :n_tau], how=preprocessing), '-.')
         plt.plot(tau, back_transform(X_test[i, n_tau:], how=preprocessing), '-.')
         plt.xlabel(r"$\tau$")
         plt.ylabel(r"$G(\tau)$")
-        plt.ylim([-1,0])
-        plt.legend(["ED", "NN", "weak", "strong"], loc='best')
-        plt.title("Sample {}".format(i))
-        mng = plt.get_current_fig_manager()
-        mng.resize(*mng.window.maxsize())
-        plt.show()
+        plt.ylim([-0.7,-0.1])
+        plt.legend(["ED" if not cont_bath else "QMC", "NN", "weak", "strong"], loc='best')
+        #plt.title("Sample {}".format(i))
+        title_str = r"$U={:.2f},\varepsilon={:.2f}".format(p["U"], p["eps"])
+        if not cont_bath:
+            title_str += r"$" + "\n"
+            title_str += r"$(\epsilon_i, V_i)\in \{"
+            for e, V in zip(p["e_list"], p["V_list"]):
+                title_str += r"({:.2f}, {:.2f}),".format(e, V)
+            title_str = title_str[:-1]
+            title_str += r"\}$"
+        else:
+            title_str += r", D={:.2f}$".format(p["D"])
+        title_str += "\n max error = {:.5f} \n".format(error / 2)
+        title_str += r"$G(0) + G(\beta) = {:.5f}$".format(bc)
+        plt.title(title_str, fontsize="medium")
+        plt.tight_layout()
+        if not cont_bath:
+            plt.savefig("plots/sample{}.png".format(i), dpi=300)
+        else:
+            plt.savefig("plots_cont_bath/sample{}.png".format(i), dpi=300)
+        #mng = plt.get_current_fig_manager()
+        #mng.resize(*mng.window.maxsize())
+        #plt.show()
+        plt.close()
+
+def evaluate(model, beta=1, gen_data_kwargs={}):
+    X_train, Y_train, X_test, Y_test, input_shape  = generate_data(**gen_data_kwargs)
+    score = model.evaluate(X_train, Y_train, batch_size=20000)
+    return score
+
+def plot_input(beta=1, n_tau=51, preprocessing='shift_and_rescale', samples=range(10),
+               gen_data_kwargs={}):
+    X_train, Y_train, X_test, Y_test, input_shape  = generate_data(**gen_data_kwargs)
+    tau = np.linspace(0, beta, n_tau, endpoint=True)
+    # We assume we draw samples from file 0
+    params = read_params(name("params", beta, 0))
+    params = [params[i] for i in samples]
+
+    for i, p in zip(samples, params):
+        plt.plot(tau, Y_test[i], 'o')
+        plt.plot(tau, X_test[i, :n_tau], 'o', c='C2')
+        plt.plot(tau, X_test[i, n_tau:], 'o', c='C3')
+        plt.xlabel(r"$\tau$")
+        plt.ylabel(r"$F(\tau) = \left[ G(\tau) + 0.5 \right] \cdot 2$")
+        plt.ylim([-0.4,0.8])
+        plt.legend(["ED", "weak", "strong"], loc='best')
+        #plt.title("Sample {}".format(i))
+        title_str = r"$U={:.2f},\varepsilon={:.2f}".format(p["U"], p["eps"])
+        title_str += r"$" + "\n"
+        title_str += r"$(\epsilon_i, V_i)\in \{"
+        for e, V in zip(p["e_list"], p["V_list"]):
+            title_str += r"({:.2f}, {:.2f}),".format(e, V)
+        title_str = title_str[:-1]
+        title_str += r"\}$"
+        plt.title(title_str, fontsize="medium")
+        plt.tight_layout()
+        plt.savefig("plots/data{}.png".format(i), dpi=300)
+        #mng = plt.get_current_fig_manager()
+        #mng.resize(*mng.window.maxsize())
+        #plt.show()
+        plt.close()
 
 
 if __name__ == "__main__":
 
-    #perform_grid_search()
-    # model = perform_learning()
-    # model.save('model.h5')
-    # predict(model, samples=range(10, 50))
+    #perform_grid_search(beta=1, n_tau=51, train_files=[0, 1])
+    #model = perform_learning()
+    #model.save('model.h5')
+
+    #plot_input(samples = range(50, 80))
 
     model = keras.models.load_model('model.h5', custom_objects={'max_error': max_error, 'boundary_cond': boundary_cond})
-    predict(model, samples=range(50),
-            gen_data_kwargs=dict(n_per_file=50, train_files=[0], val_files=[0], parent="data_cont_bath/"))
+
+    score_train = evaluate(model, gen_data_kwargs=dict(train_files=range(3,10), val_files=[0]))
+    score_test = evaluate(model, gen_data_kwargs=dict(train_files=range(0,3), val_files=[0]))
+    score_new = evaluate(model, gen_data_kwargs=dict(n_per_file=50, train_files=[0], val_files=[0], parent="data_cont_bath/"))
+
+    with open("scores.txt", "w") as f:
+        for score, m_name in zip([score_train, score_test, score_new], ["train", "test", "continuous bath"]):
+            f.write(m_name + "\n")
+            for s, metric in zip(score, ['MSE', 'MAE', 'max error', 'boundary cond']):
+                if metric in ['MAE', 'max error']:
+                    s = s / 2
+                f.write(metric + ": " + str(s) + " ")
+            f.write("\n")
+
+
+    predict(model, samples=range(50, 65))
+    # predict(model, samples=range(0, 50), cont_bath=True,
+    #        gen_data_kwargs=dict(n_per_file=50, train_files=[0], val_files=[0], parent="data_cont_bath/"))
