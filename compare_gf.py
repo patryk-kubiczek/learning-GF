@@ -5,7 +5,7 @@ import subprocess
 generate = True
 
 if generate:
-    proc = subprocess.Popen("./generate_gf.sh")
+    proc = subprocess.Popen("./generate_single_gf.sh")
     proc.wait()
 
 files_list = [("G_ED.txt", "ED", '-'),

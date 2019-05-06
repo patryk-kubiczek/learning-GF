@@ -297,5 +297,5 @@ if __name__ == "__main__":
     from params import *
 
     export_Delta_tau(beta, discrete_bath=[e_list, V_list], filename=Delta_filename)
-    #weak_coupling_gf(beta, U, eps, discrete_bath=[e_list, V_list], plot=False)
-    weak_coupling_gf(beta, U, eps, continuous_bath=[Gamma_func(D), integrated_Gamma(D), E_max(D)], plot=False)
+    weak_coupling_gf(beta, U, eps, discrete_bath=[e_list, V_list], plot=False)
+    #weak_coupling_gf(beta, U, eps, continuous_bath=[Gamma_func(D), integrated_Gamma(D), E_max(D)], plot=False)
